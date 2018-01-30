@@ -1,7 +1,7 @@
 # challengevodassets
 
 getjsons.sh - 
-Shell script to download some json files from OMDB and to copy them into an S3 bucket
+Script to download some json files from OMDB and to copy them into an S3 bucket
 
 nagraChallengeLuisLongoCloudFormation.yaml - 
 CloudFormation template
