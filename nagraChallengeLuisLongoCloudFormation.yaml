@@ -1,0 +1,268 @@
+---
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instances. Linked to AWS Parameter
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+
+  SSHLocation:
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    Type: String
+    MinLength: '9'
+    MaxLength: '18'
+    Default: 0.0.0.0/0
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+
+  BucketName:
+    Description: S3 Bucket name
+    Type: String
+    Default: myvodassetsluisnagrachallenge30
+
+  SlackURL:
+    Description: Slack URL
+    Type: String
+    Default: https://hooks.slack.com/services/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
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      HVM64: ami-6869aa05
+    us-west-2:
+      HVM64: ami-7172b611
+    us-west-1:
+      HVM64: ami-31490d51
+    eu-west-1:
+      HVM64: ami-f9dd458a
+    eu-central-1:
+      HVM64: ami-ea26ce85
+    ap-northeast-1:
+      HVM64: ami-374db956
+    ap-northeast-2:
+      HVM64: ami-2b408b45
+    ap-southeast-1:
+      HVM64: ami-a59b49c6
+    ap-southeast-2:
+      HVM64: ami-dc361ebf
+    ap-south-1:
+      HVM64: ami-ffbdd790
+    us-east-2:
+      HVM64: ami-f6035893
+    sa-east-1:
+      HVM64: ami-6dd04501
+    cn-north-1:
+      HVM64: ami-8e6aa0e3
+
+Resources:
+  # S3 bucket
+  MyS3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      AccessControl: Private
+      BucketName: !Ref BucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Function: !GetAtt LambdaConvertJsonToCsv.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: 'json/'
+                  - Name: suffix
+                    Value: '.json'
+
+  BucketPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LambdaConvertJsonToCsv
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref "AWS::AccountId"
+      SourceArn: !Sub "arn:aws:s3:::${BucketName}"
+
+  # Lambda to convert json file to csv file
+  LambdaConvertJsonToCsv:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: 'convertJsonToCsv.lambda_handler'
+      FunctionName: LambdaConvertJsonToCsv
+      Role: !GetAtt LambdaAccessToMyS3BucketsAndCloudWatchRole.Arn
+      Code:
+        S3Bucket: "myscriptsluisnagra"
+        S3Key: "convertJsonToCsv.zip"
+      Timeout: '10'
+      Runtime: 'python3.6'
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref SNSTopicMessages
+
+  # Lambda Role to be able to access S3, CloudWatch and SNS
+  LambdaAccessToMyS3BucketsAndCloudWatchRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies:
+        - PolicyName: S3Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 'S3:GetObject'
+                Resource:
+                  - !Sub "arn:aws:s3:::${BucketName}/*"
+                  - 'arn:aws:s3:::myscriptsluisnagra/*'
+        - PolicyName: SNSPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sns:Publish'
+                Resource: arn:aws:sns:*:*:*
+
+  SNSTopicMessages:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: SNSTopicMessages
+      Subscription:
+        - Endpoint: !GetAtt LambdaSendMessageToSlack.Arn
+          Protocol: lambda
+      TopicName: SNSTopicMessages
+    DependsOn: LambdaSendMessageToSlack
+
+  LambdaSNSPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref LambdaSendMessageToSlack
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref SNSTopicMessages
+
+  # Lambda to convert json file to csv file
+  LambdaSendMessageToSlack:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: 'sendMessageToSlack.handler'
+      FunctionName: LambdaSendMessageToSlack
+      Role: !GetAtt LambdaSendMessageToSlackRole.Arn
+      Code:
+        S3Bucket: "myscriptsluisnagra"
+        S3Key: "sendMessageToSlack.zip"
+      Timeout: '10'
+      Runtime: 'nodejs6.10'
+      Environment:
+        Variables:
+          SLACK_URL: !Ref SlackURL
+
+  LambdaSendMessageToSlackRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+
+  # EC2 Instance
+  MyInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      # AvailabilityZone: us-east-1a
+      # ImageId: ami-a4c7edb2
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', HVM64]
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref EC2AccessToMyS3BucketsInstanceProfile
+      SecurityGroups:
+        - !Ref ServerSecurityGroup
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            yum update -y
+            sudo su
+            mkdir /myscripts
+            curl https://s3.amazonaws.com/myscriptsluisnagra/getjsons.sh > /myscripts/getjsons.sh
+            chmod 700 /myscripts/getjsons.sh
+            /myscripts/getjsons.sh ${BucketName}
+
+  # EIP for the EC2 instance
+  MyEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref MyInstance
+
+  # EC2 security group
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: allow connections from specified CIDR ranges
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: !Ref SSHLocation
+
+  # EC2 Instance Profile
+  EC2AccessToMyS3BucketsInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2AccessToMyS3BucketsRole
+
+  # EC2 Role to be able to access S3, CloudWatch and SNS
+  EC2AccessToMyS3BucketsRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: EC2S3Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 'S3:GetObject'
+                Resource:
+                  - !Sub "arn:aws:s3:::${BucketName}/*"
+                  - 'arn:aws:s3:::myscriptsluisnagra/*'
+        - PolicyName: EC2SNSPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sns:Publish'
+                Resource: arn:aws:sns:*:*:*
